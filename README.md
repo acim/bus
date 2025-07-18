@@ -2,9 +2,9 @@
 
 Message queue abstractions.
 
-[![Build Status](https://github.com/acim/bus/workflows/build/badge.svg)](https://github.com/acim/bus/actions)
-[![Go Reference](https://pkg.go.dev/badge/go.acim.net/bus.svg)](https://pkg.go.dev/go.acim.net/bus)
-[![Go Report](https://goreportcard.com/badge/go.acim.net/bus)](https://goreportcard.com/report/go.acim.net/bus)
+[![pipeline](https://github.com/acim/bus/actions/workflows/pipeline.yml/badge.svg)](https://github.com/acim/bus/actions/workflows/pipeline.yml)
+[![reference](https://pkg.go.dev/badge/go.acim.net/bus.svg)](https://pkg.go.dev/go.acim.net/bus)
+[![report](https://goreportcard.com/badge/go.acim.net/bus)](https://goreportcard.com/report/go.acim.net/bus)
 
 ## License
 
