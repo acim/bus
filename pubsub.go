@@ -16,7 +16,7 @@ const (
 	defaultRetentionDuration = 24 * time.Hour
 )
 
-var _ Queue[proto.Message] = (*PubSub[*dummyEvent])(nil)
+var _ Queue[proto.Message] = (*PubSubQueue[*dummyEvent])(nil)
 
 type (
 	Config struct {
@@ -34,10 +34,11 @@ type (
 		RetentionDuration         time.Duration
 	}
 
-	PubSub[T proto.Message] struct {
+	PubSubQueue[T proto.Message] struct {
 		inner        *pubsub.Client
 		topic        *pubsub.Topic
-		subscription *pubsub.Subscription // FIXME: This is not defined
+		subscription *pubsub.Subscription
+		orderingKey  string
 	}
 )
 
@@ -48,14 +49,15 @@ var DefaultOptionalConfigWithMessageOrdering = OptionalConfig{
 	RetentionDuration:         defaultRetentionDuration,
 }
 
-func New[T proto.Message](ctx context.Context, cfg *Config,
-	optCfg *OptionalConfig) (*PubSub[T], func(context.Context) error, error) {
+// NewPubSubQueue creates PubSub implementation of the Queue interface.
+func NewPubSubQueue[T proto.Message](ctx context.Context, cfg *Config,
+	optCfg *OptionalConfig) (*PubSubQueue[T], func(context.Context) error, error) {
 	client, err := pubsub.NewClient(ctx, cfg.ProjectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pubsub.NewClient: %w", err)
 	}
 
-	ps := &PubSub[T]{ //nolint:exhaustruct
+	ps := &PubSubQueue[T]{ //nolint:exhaustruct
 		inner: client,
 	}
 
@@ -76,53 +78,53 @@ func New[T proto.Message](ctx context.Context, cfg *Config,
 	}, nil
 }
 
-func (ps *PubSub[T]) Pub(ctx context.Context, message proto.Message) error {
+// Pub implements Queue interface.
+func (ps *PubSubQueue[T]) Pub(ctx context.Context, message proto.Message) error {
 	data, err := protojson.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("protojson.Marshal: %w", err)
 	}
 
-	res := ps.topic.Publish(ctx, &pubsub.Message{ //nolint:exhaustruct
-		Data:        data,
-		OrderingKey: "event", // FIXME: This has to be variable
-	})
+	m := &pubsub.Message{Data: data} //nolint:exhaustruct
 
-	_, err = res.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("res.Get: %w", err)
+	if ps.orderingKey != "" {
+		m.OrderingKey = ps.orderingKey
 	}
+
+	_ = ps.topic.Publish(ctx, m)
 
 	return nil
 }
 
-func (ps *PubSub[T]) Sub(ctx context.Context) <-chan MessageOrError[proto.Message] {
-	ch := make(chan MessageOrError[proto.Message])
+// Sub implements Queue interface.
+func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[proto.Message] {
+	ch := make(chan Message[proto.Message])
 
 	go func() {
 		err := ps.subscription.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
 			var message proto.Message
 
 			if err := protojson.Unmarshal(m.Data, message); err != nil {
-				ch <- MessageOrError[proto.Message]{Error: err} //nolint:exhaustruct
+				ch <- Message[proto.Message]{Error: err} //nolint:exhaustruct
 
 				m.Nack()
 
 				return
 			}
 
-			ch <- MessageOrError[proto.Message]{Data: message} //nolint:exhaustruct
+			ch <- Message[proto.Message]{Data: message} //nolint:exhaustruct
 
 			m.Ack()
 		})
 		if err != nil {
-			ch <- MessageOrError[proto.Message]{Error: err} //nolint:exhaustruct
+			ch <- Message[proto.Message]{Error: err} //nolint:exhaustruct
 		}
 	}()
 
 	return ch
 }
 
-func (ps *PubSub[T]) createTopic(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
 	topic := ps.inner.Topic(cfg.Topic)
 
 	exists, err := topic.Exists(ctx)
@@ -160,7 +162,7 @@ func (ps *PubSub[T]) createTopic(ctx context.Context, cfg *Config, optCfg *Optio
 	return nil
 }
 
-func (ps *PubSub[T]) createSubscription(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
 	subscription := ps.inner.Subscription(cfg.Subscription)
 
 	exists, err := subscription.Exists(ctx)
@@ -174,14 +176,8 @@ func (ps *PubSub[T]) createSubscription(ctx context.Context, cfg *Config, optCfg
 		return nil
 	}
 
-	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription, pubsub.SubscriptionConfig{ //nolint:exhaustruct
-		AckDeadline:               defaultAckDeadline,
-		EnableExactlyOnceDelivery: true,
-		EnableMessageOrdering:     true,
-		ExpirationPolicy:          24 * time.Hour, //nolint:mnd
-		RetentionDuration:         defaultRetentionDuration,
-		Topic:                     ps.topic,
-	})
+	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription,
+		optCfg.toPubSub(ps.topic, cfg.OrderingKey != ""))
 	if err != nil {
 		return fmt.Errorf("CreateSubscription: %w", err)
 	}
@@ -189,4 +185,15 @@ func (ps *PubSub[T]) createSubscription(ctx context.Context, cfg *Config, optCfg
 	ps.subscription = subscription
 
 	return nil
+}
+
+func (c OptionalConfig) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub.SubscriptionConfig {
+	return pubsub.SubscriptionConfig{ //nolint:exhaustruct
+		AckDeadline:               c.AckDeadline,
+		EnableExactlyOnceDelivery: c.EnableExactlyOnceDelivery,
+		EnableMessageOrdering:     enableMessageOrdering,
+		ExpirationPolicy:          c.ExpirationPolicy,
+		RetentionDuration:         c.RetentionDuration,
+		Topic:                     topic,
+	}
 }
