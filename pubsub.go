@@ -10,86 +10,70 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const retentionDuration = 24 * time.Hour
+const (
+	defaultAckDeadline       = 20 * time.Second
+	defaultExpirationPolicy  = 24 * time.Hour
+	defaultRetentionDuration = 24 * time.Hour
+)
 
 var _ Queue[proto.Message] = (*PubSub[*dummyEvent])(nil)
 
-const ackDeadline = 20 * time.Second
+type (
+	Config struct {
+		ProjectID    string
+		Topic        string
+		Subscription string
+		// Optional. If specified, message ordering will be enabled.
+		OrderingKey string
+	}
 
-type PubSub[T proto.Message] struct {
-	inner        *pubsub.Client
-	topic        *pubsub.Topic        // FIXME: This is not defined
-	subscription *pubsub.Subscription // FIXME: This is not defined
+	OptionalConfig struct {
+		AckDeadline               time.Duration
+		EnableExactlyOnceDelivery bool
+		ExpirationPolicy          time.Duration
+		RetentionDuration         time.Duration
+	}
+
+	PubSub[T proto.Message] struct {
+		inner        *pubsub.Client
+		topic        *pubsub.Topic
+		subscription *pubsub.Subscription // FIXME: This is not defined
+	}
+)
+
+var DefaultOptionalConfigWithMessageOrdering = OptionalConfig{
+	AckDeadline:               defaultAckDeadline,
+	EnableExactlyOnceDelivery: true,
+	ExpirationPolicy:          defaultExpirationPolicy,
+	RetentionDuration:         defaultRetentionDuration,
 }
 
-func New[T proto.Message](ctx context.Context, projectID string) (*PubSub[T], func(context.Context) error, error) {
-	client, err := pubsub.NewClient(ctx, projectID)
+func New[T proto.Message](ctx context.Context, cfg *Config,
+	optCfg *OptionalConfig) (*PubSub[T], func(context.Context) error, error) {
+	client, err := pubsub.NewClient(ctx, cfg.ProjectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pubsub.NewClient: %w", err)
 	}
 
-	return &PubSub[T]{ //nolint:exhaustruct
-			inner: client,
-		}, func(ctx context.Context) error {
-			if err := client.Close(); err != nil {
-				return fmt.Errorf("client.Close: %w", err)
-			}
-
-			return nil
-		}, nil
-}
-
-func (ps *PubSub[T]) CreateTopic(ctx context.Context, name string) (*pubsub.Topic, error) {
-	topic := ps.inner.Topic(name)
-
-	exists, err := topic.Exists(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("topic.Exists: %w", err)
+	ps := &PubSub[T]{ //nolint:exhaustruct
+		inner: client,
 	}
 
-	if exists {
-		return topic, nil
+	if err = ps.createTopic(ctx, cfg, optCfg); err != nil {
+		return nil, nil, fmt.Errorf("createTopic: %w", err)
 	}
 
-	topic, err = ps.inner.CreateTopicWithConfig(ctx, name, &pubsub.TopicConfig{ //nolint:exhaustruct
-		RetentionDuration: retentionDuration,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ps.inner.CreateTopic: %w", err)
+	if err = ps.createSubscription(ctx, cfg, optCfg); err != nil {
+		return nil, nil, fmt.Errorf("createSubscription: %w", err)
 	}
 
-	topic.EnableMessageOrdering = true
+	return ps, func(ctx context.Context) error {
+		if err := client.Close(); err != nil {
+			return fmt.Errorf("client.Close: %w", err)
+		}
 
-	return topic, nil
-}
-
-func (ps *PubSub[T]) CreateSubscription(ctx context.Context, topic *pubsub.Topic,
-	name string,
-) (*pubsub.Subscription, error) {
-	subscription := ps.inner.Subscription(name)
-
-	exists, err := subscription.Exists(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("subsciption.Exists: %w", err)
-	}
-
-	if exists {
-		return subscription, nil
-	}
-
-	subscription, err = ps.inner.CreateSubscription(ctx, name, pubsub.SubscriptionConfig{ //nolint:exhaustruct
-		AckDeadline:               ackDeadline,
-		EnableExactlyOnceDelivery: true,
-		EnableMessageOrdering:     true,
-		ExpirationPolicy:          24 * time.Hour, //nolint:mnd
-		RetentionDuration:         retentionDuration,
-		Topic:                     topic,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ps.inner.CreateSubscription: %w", err)
-	}
-
-	return subscription, nil
+		return nil
+	}, nil
 }
 
 func (ps *PubSub[T]) Pub(ctx context.Context, message proto.Message) error {
@@ -136,4 +120,73 @@ func (ps *PubSub[T]) Sub(ctx context.Context) <-chan MessageOrError[proto.Messag
 	}()
 
 	return ch
+}
+
+func (ps *PubSub[T]) createTopic(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+	topic := ps.inner.Topic(cfg.Topic)
+
+	exists, err := topic.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("topic.Exists: %w", err)
+	}
+
+	if exists {
+		ps.topic = topic
+
+		return nil
+	}
+
+	switch {
+	case optCfg != nil && optCfg.RetentionDuration != 0:
+		topic, err = ps.inner.CreateTopicWithConfig(ctx, cfg.Topic, &pubsub.TopicConfig{ //nolint:exhaustruct
+			RetentionDuration: defaultRetentionDuration,
+		})
+		if err != nil {
+			return fmt.Errorf("CreateTopicWithConfig: %w", err)
+		}
+	default:
+		topic, err = ps.inner.CreateTopic(ctx, cfg.Topic)
+		if err != nil {
+			return fmt.Errorf("CreateTopic: %w", err)
+		}
+	}
+
+	if cfg.OrderingKey != "" {
+		topic.EnableMessageOrdering = true
+	}
+
+	ps.topic = topic
+
+	return nil
+}
+
+func (ps *PubSub[T]) createSubscription(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+	subscription := ps.inner.Subscription(cfg.Subscription)
+
+	exists, err := subscription.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("subsciption.Exists: %w", err)
+	}
+
+	if exists {
+		ps.subscription = subscription
+
+		return nil
+	}
+
+	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription, pubsub.SubscriptionConfig{ //nolint:exhaustruct
+		AckDeadline:               defaultAckDeadline,
+		EnableExactlyOnceDelivery: true,
+		EnableMessageOrdering:     true,
+		ExpirationPolicy:          24 * time.Hour, //nolint:mnd
+		RetentionDuration:         defaultRetentionDuration,
+		Topic:                     ps.topic,
+	})
+	if err != nil {
+		return fmt.Errorf("CreateSubscription: %w", err)
+	}
+
+	ps.subscription = subscription
+
+	return nil
 }
