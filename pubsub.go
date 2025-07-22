@@ -107,14 +107,17 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 			if err := protojson.Unmarshal(m.Data, message); err != nil {
 				ch <- Message[T]{Error: err} //nolint:exhaustruct
 
-				m.Nack()
+				m.Ack()
 
 				return
 			}
 
-			ch <- Message[T]{Data: message} //nolint:exhaustruct
-
-			m.Ack()
+			ch <- Message[T]{
+				Data:  message,
+				Ack:   m.Ack,
+				Nack:  m.Nack,
+				Error: nil,
+			}
 		})
 		if err != nil {
 			ch <- Message[T]{Error: err} //nolint:exhaustruct

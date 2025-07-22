@@ -10,6 +10,8 @@ import (
 type Message[T proto.Message] struct {
 	Data  T
 	Error error
+	Ack   func()
+	Nack  func()
 }
 
 // Queue defines message queue methods.
