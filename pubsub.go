@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	defaultAckDeadline       = 20 * time.Second
-	defaultExpirationPolicy  = 24 * time.Hour
-	defaultRetentionDuration = 24 * time.Hour
+	DefaultAckDeadline       = 30 * time.Second
+	DefaultExpirationPolicy  = 24 * time.Hour
+	DefaultRetentionDuration = 24 * time.Hour
 )
 
 var _ Queue[*dummyEvent] = (*PubSubQueue[*dummyEvent])(nil)
@@ -43,10 +43,10 @@ type (
 )
 
 var DefaultOptionalConfigWithMessageOrdering = OptionalConfig{
-	AckDeadline:               defaultAckDeadline,
+	AckDeadline:               DefaultAckDeadline,
 	EnableExactlyOnceDelivery: true,
-	ExpirationPolicy:          defaultExpirationPolicy,
-	RetentionDuration:         defaultRetentionDuration,
+	ExpirationPolicy:          DefaultExpirationPolicy,
+	RetentionDuration:         DefaultRetentionDuration,
 }
 
 // NewPubSubQueue creates PubSub implementation of the Queue interface.
@@ -141,7 +141,7 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config, optCfg *
 	switch {
 	case optCfg != nil && optCfg.RetentionDuration != 0:
 		topic, err = ps.inner.CreateTopicWithConfig(ctx, cfg.Topic, &pubsub.TopicConfig{ //nolint:exhaustruct
-			RetentionDuration: defaultRetentionDuration,
+			RetentionDuration: DefaultRetentionDuration,
 		})
 		if err != nil {
 			return fmt.Errorf("CreateTopicWithConfig: %w", err)
