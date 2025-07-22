@@ -16,7 +16,7 @@ const (
 	defaultRetentionDuration = 24 * time.Hour
 )
 
-var _ Queue[proto.Message] = (*PubSubQueue[*dummyEvent])(nil)
+var _ Queue[*dummyEvent] = (*PubSubQueue[*dummyEvent])(nil)
 
 type (
 	Config struct {
@@ -79,7 +79,7 @@ func NewPubSubQueue[T proto.Message](ctx context.Context, cfg *Config,
 }
 
 // Pub implements Queue interface.
-func (ps *PubSubQueue[T]) Pub(ctx context.Context, message proto.Message) error {
+func (ps *PubSubQueue[T]) Pub(ctx context.Context, message T) error {
 	data, err := protojson.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("protojson.Marshal: %w", err)
@@ -97,27 +97,27 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message proto.Message) error 
 }
 
 // Sub implements Queue interface.
-func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[proto.Message] {
-	ch := make(chan Message[proto.Message])
+func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
+	ch := make(chan Message[T])
 
 	go func() {
 		err := ps.subscription.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
-			var message proto.Message
+			var message T
 
 			if err := protojson.Unmarshal(m.Data, message); err != nil {
-				ch <- Message[proto.Message]{Error: err} //nolint:exhaustruct
+				ch <- Message[T]{Error: err} //nolint:exhaustruct
 
 				m.Nack()
 
 				return
 			}
 
-			ch <- Message[proto.Message]{Data: message} //nolint:exhaustruct
+			ch <- Message[T]{Data: message} //nolint:exhaustruct
 
 			m.Ack()
 		})
 		if err != nil {
-			ch <- Message[proto.Message]{Error: err} //nolint:exhaustruct
+			ch <- Message[T]{Error: err} //nolint:exhaustruct
 		}
 	}()
 

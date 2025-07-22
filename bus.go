@@ -3,16 +3,17 @@ package bus
 import (
 	"context"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-type Message[T any] struct {
+type Message[T proto.Message] struct {
 	Data  T
 	Error error
 }
 
 // Queue defines message queue methods.
-type Queue[T any] interface {
+type Queue[T proto.Message] interface {
 	Pub(ctx context.Context, message T) error
 	Sub(ctx context.Context) <-chan Message[T]
 }
