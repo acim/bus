@@ -23,7 +23,7 @@ var (
 	ErrEmptyProjectID    = errors.New("empty project ID")
 	ErrEmptyTopic        = errors.New("empty topic")
 	ErrEmptySubscription = errors.New("empty subscription name")
-	ErrEmptySource       = errors.New("empty source")
+	ErrEmptyOrigin       = errors.New("empty origin")
 )
 
 type (
@@ -31,8 +31,8 @@ type (
 		ProjectID    string
 		Topic        string
 		Subscription string
-		// Source defines source attribute for each message and filters out self created ones.
-		Source string
+		// Origin defines origin attribute for each message and filters out self created messages.
+		Origin string
 		// Optional. If specified, message ordering will be enabled.
 		OrderingKey string
 		// Optional. If not specified, will default to 30 seconds.
@@ -48,6 +48,7 @@ type (
 		inner        *pubsub.Client
 		topic        *pubsub.Topic
 		subscription *pubsub.Subscription
+		origin       string
 		orderingKey  string
 	}
 )
@@ -68,8 +69,8 @@ func NewPubSubQueue[T proto.Message](ctx context.Context,
 		return nil, nil, ErrEmptySubscription
 	}
 
-	if cfg.Source == "" {
-		return nil, nil, ErrEmptySource
+	if cfg.Origin == "" {
+		return nil, nil, ErrEmptyOrigin
 	}
 
 	if cfg.AckDeadline == 0 {
@@ -90,7 +91,8 @@ func NewPubSubQueue[T proto.Message](ctx context.Context,
 	}
 
 	ps := &PubSubQueue[T]{ //nolint:exhaustruct
-		inner: client,
+		inner:  client,
+		origin: cfg.Origin,
 	}
 
 	if err = ps.createTopic(ctx, cfg); err != nil {
@@ -117,7 +119,12 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message T) error {
 		return fmt.Errorf("protojson.Marshal: %w", err)
 	}
 
-	m := &pubsub.Message{Data: data} //nolint:exhaustruct
+	m := &pubsub.Message{
+		Data: data,
+		Attributes: map[string]string{
+			"origin": ps.origin,
+		},
+	} //nolint:exhaustruct
 
 	if ps.orderingKey != "" {
 		m.OrderingKey = ps.orderingKey
@@ -229,5 +236,6 @@ func (c Config) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub
 		ExpirationPolicy:          c.ExpirationPolicy,
 		RetentionDuration:         c.RetentionDuration,
 		Topic:                     topic,
+		Filter:                    fmt.Sprintf("attributes.origin != '%s'", c.Origin),
 	}
 }
