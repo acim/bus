@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,27 +12,36 @@ import (
 )
 
 const (
-	DefaultAckDeadline       = 30 * time.Second
-	DefaultExpirationPolicy  = 24 * time.Hour
-	DefaultRetentionDuration = 24 * time.Hour
+	defaultAckDeadline       = 30 * time.Second
+	defaultExpirationPolicy  = 24 * time.Hour
+	defaultRetentionDuration = 24 * time.Hour
 )
 
 var _ Queue[*dummyEvent] = (*PubSubQueue[*dummyEvent])(nil)
+
+var (
+	ErrEmptyProjectID    = errors.New("empty project ID")
+	ErrEmptyTopic        = errors.New("empty topic")
+	ErrEmptySubscription = errors.New("empty subscription name")
+	ErrEmptySource       = errors.New("empty source")
+)
 
 type (
 	Config struct {
 		ProjectID    string
 		Topic        string
 		Subscription string
+		// Source defines source attribute for each message and filters out self created ones.
+		Source string
 		// Optional. If specified, message ordering will be enabled.
 		OrderingKey string
-	}
-
-	OptionalConfig struct {
-		AckDeadline               time.Duration
-		EnableExactlyOnceDelivery bool
-		ExpirationPolicy          time.Duration
+		// Optional. If not specified, will default to 30 seconds.
+		AckDeadline time.Duration
+		// Optional. If not specified, will default to one day.
+		ExpirationPolicy time.Duration
+		// Optional. If not specified, will default to one day.
 		RetentionDuration         time.Duration
+		EnableExactlyOnceDelivery bool
 	}
 
 	PubSubQueue[T proto.Message] struct {
@@ -42,16 +52,38 @@ type (
 	}
 )
 
-var DefaultOptionalConfigWithMessageOrdering = OptionalConfig{
-	AckDeadline:               DefaultAckDeadline,
-	EnableExactlyOnceDelivery: true,
-	ExpirationPolicy:          DefaultExpirationPolicy,
-	RetentionDuration:         DefaultRetentionDuration,
-}
-
 // NewPubSubQueue creates PubSub implementation of the Queue interface.
-func NewPubSubQueue[T proto.Message](ctx context.Context, cfg *Config,
-	optCfg *OptionalConfig) (*PubSubQueue[T], func(context.Context) error, error) {
+func NewPubSubQueue[T proto.Message](ctx context.Context,
+	cfg *Config) (*PubSubQueue[T], func(context.Context) error, error) {
+
+	if cfg.ProjectID == "" {
+		return nil, nil, ErrEmptyProjectID
+	}
+
+	if cfg.Topic == "" {
+		return nil, nil, ErrEmptyTopic
+	}
+
+	if cfg.Subscription == "" {
+		return nil, nil, ErrEmptySubscription
+	}
+
+	if cfg.Source == "" {
+		return nil, nil, ErrEmptySource
+	}
+
+	if cfg.AckDeadline == 0 {
+		cfg.AckDeadline = defaultAckDeadline
+	}
+
+	if cfg.ExpirationPolicy == 0 {
+		cfg.ExpirationPolicy = defaultExpirationPolicy
+	}
+
+	if cfg.RetentionDuration == 0 {
+		cfg.RetentionDuration = defaultRetentionDuration
+	}
+
 	client, err := pubsub.NewClient(ctx, cfg.ProjectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("pubsub.NewClient: %w", err)
@@ -61,11 +93,11 @@ func NewPubSubQueue[T proto.Message](ctx context.Context, cfg *Config,
 		inner: client,
 	}
 
-	if err = ps.createTopic(ctx, cfg, optCfg); err != nil {
+	if err = ps.createTopic(ctx, cfg); err != nil {
 		return nil, nil, fmt.Errorf("createTopic: %w", err)
 	}
 
-	if err = ps.createSubscription(ctx, cfg, optCfg); err != nil {
+	if err = ps.createSubscription(ctx, cfg); err != nil {
 		return nil, nil, fmt.Errorf("createSubscription: %w", err)
 	}
 
@@ -127,7 +159,7 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 	return ch
 }
 
-func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) error {
 	topic := ps.inner.Topic(cfg.Topic)
 
 	exists, err := topic.Exists(ctx)
@@ -142,9 +174,9 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config, optCfg *
 	}
 
 	switch {
-	case optCfg != nil && optCfg.RetentionDuration != 0:
+	case cfg.RetentionDuration != 0:
 		topic, err = ps.inner.CreateTopicWithConfig(ctx, cfg.Topic, &pubsub.TopicConfig{ //nolint:exhaustruct
-			RetentionDuration: DefaultRetentionDuration,
+			RetentionDuration: cfg.RetentionDuration,
 		})
 		if err != nil {
 			return fmt.Errorf("CreateTopicWithConfig: %w", err)
@@ -165,12 +197,12 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config, optCfg *
 	return nil
 }
 
-func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config, optCfg *OptionalConfig) error {
+func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config) error {
 	subscription := ps.inner.Subscription(cfg.Subscription)
 
 	exists, err := subscription.Exists(ctx)
 	if err != nil {
-		return fmt.Errorf("subsciption.Exists: %w", err)
+		return fmt.Errorf("subscription.Exists: %w", err)
 	}
 
 	if exists {
@@ -179,8 +211,7 @@ func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config, o
 		return nil
 	}
 
-	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription,
-		optCfg.toPubSub(ps.topic, cfg.OrderingKey != ""))
+	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription, cfg.toPubSub(ps.topic, cfg.OrderingKey != ""))
 	if err != nil {
 		return fmt.Errorf("CreateSubscription: %w", err)
 	}
@@ -190,7 +221,7 @@ func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config, o
 	return nil
 }
 
-func (c OptionalConfig) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub.SubscriptionConfig {
+func (c Config) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub.SubscriptionConfig {
 	return pubsub.SubscriptionConfig{ //nolint:exhaustruct
 		AckDeadline:               c.AckDeadline,
 		EnableExactlyOnceDelivery: c.EnableExactlyOnceDelivery,
