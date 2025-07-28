@@ -236,6 +236,6 @@ func (c Config) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub
 		ExpirationPolicy:          c.ExpirationPolicy,
 		RetentionDuration:         c.RetentionDuration,
 		Topic:                     topic,
-		Filter:                    fmt.Sprintf("attributes.origin != '%s'", c.Origin),
+		Filter:                    fmt.Sprintf("attributes.origin != %q", c.Origin),
 	}
 }
