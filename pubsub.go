@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
+	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 const (
@@ -45,11 +48,11 @@ type (
 	}
 
 	PubSubQueue[T proto.Message] struct {
-		inner        *pubsub.Client
-		topic        *pubsub.Topic
-		subscription *pubsub.Subscription
-		origin       string
-		orderingKey  string
+		inner       *pubsub.Client
+		publisher   *pubsub.Publisher
+		subscriber  *pubsub.Subscriber
+		origin      string
+		orderingKey string
 	}
 )
 
@@ -95,15 +98,23 @@ func NewPubSubQueue[T proto.Message](ctx context.Context,
 		origin: cfg.Origin,
 	}
 
-	if err = ps.createTopic(ctx, cfg); err != nil {
+	topic, err := ps.createTopic(ctx, cfg)
+	if err != nil {
 		return nil, nil, fmt.Errorf("createTopic: %w", err)
 	}
 
-	if err = ps.createSubscription(ctx, cfg); err != nil {
+	ps.publisher = ps.inner.Publisher(topic.GetName())
+
+	subscription, err := ps.createSubscription(ctx, cfg)
+	if err != nil {
 		return nil, nil, fmt.Errorf("createSubscription: %w", err)
 	}
 
+	ps.subscriber = ps.inner.Subscriber(subscription.GetName())
+
 	return ps, func(ctx context.Context) error {
+		ps.publisher.Stop()
+
 		if err := client.Close(); err != nil {
 			return fmt.Errorf("client.Close: %w", err)
 		}
@@ -130,7 +141,7 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message T) error {
 		m.OrderingKey = ps.orderingKey
 	}
 
-	_ = ps.topic.Publish(ctx, m)
+	_ = ps.publisher.Publish(ctx, m)
 
 	return nil
 }
@@ -140,7 +151,7 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 	ch := make(chan Message[T])
 
 	go func() {
-		err := ps.subscription.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
+		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
 			var message T
 
 			if err := protojson.Unmarshal(m.Data, message); err != nil {
@@ -166,76 +177,86 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 	return ch
 }
 
-func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) error {
-	topic := ps.inner.Topic(cfg.Topic)
+func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) (*pubsubpb.Topic, error) {
+	topics := ps.inner.TopicAdminClient.ListTopics(ctx, &pubsubpb.ListTopicsRequest{
+		Project: "projects/" + cfg.ProjectID,
+	})
 
-	exists, err := topic.Exists(ctx)
-	if err != nil {
-		return fmt.Errorf("topic.Exists: %w", err)
-	}
+	for {
+		topic, err := topics.Next()
+		if err != nil {
+			if errors.Is(err, iterator.Done) {
+				break
+			}
 
-	if exists {
-		ps.topic = topic
+			return nil, fmt.Errorf("topics.Next(): %w", err)
+		}
 
-		return nil
+		if topic.Name == cfg.Topic {
+			return topic, nil
+		}
 	}
 
 	switch {
 	case cfg.RetentionDuration != 0:
-		topic, err = ps.inner.CreateTopicWithConfig(ctx, cfg.Topic, &pubsub.TopicConfig{ //nolint:exhaustruct
-			RetentionDuration: cfg.RetentionDuration,
+		topic, err := ps.inner.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{ //nolint:exhaustruct
+			Name:                     "projects/" + cfg.ProjectID + "/topics/" + cfg.Topic,
+			MessageRetentionDuration: durationpb.New(cfg.RetentionDuration),
 		})
 		if err != nil {
-			return fmt.Errorf("CreateTopicWithConfig: %w", err)
+			return nil, fmt.Errorf("TopicAdminClient.CreateTopic: %w", err)
 		}
+
+		return topic, nil
 	default:
-		topic, err = ps.inner.CreateTopic(ctx, cfg.Topic)
+		topic, err := ps.inner.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{ //nolint:exhaustruct
+			Name: "projects/" + cfg.ProjectID + "/topics/" + cfg.Topic,
+		})
 		if err != nil {
-			return fmt.Errorf("CreateTopic: %w", err)
+			return nil, fmt.Errorf("TopicAdminClient.CreateTopic: %w", err)
+		}
+
+		return topic, nil
+	}
+}
+
+func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config) (*pubsubpb.Subscription, error) {
+	subscriptions := ps.inner.SubscriptionAdminClient.ListSubscriptions(ctx, &pubsubpb.ListSubscriptionsRequest{
+		Project: "projects/" + cfg.ProjectID,
+	})
+
+	for {
+		subscription, err := subscriptions.Next()
+		if err != nil {
+			if errors.Is(err, iterator.Done) {
+				break
+			}
+
+			return nil, fmt.Errorf("subscriptions.Next(): %w", err)
+		}
+
+		if subscription.Name == cfg.Subscription {
+			return subscription, nil
 		}
 	}
 
-	if cfg.OrderingKey != "" {
-		topic.EnableMessageOrdering = true
+	subscription, err := ps.inner.SubscriptionAdminClient.CreateSubscription(ctx, cfg.toPubSub(cfg.OrderingKey != ""))
+	if err != nil {
+		return nil, fmt.Errorf("CreateSubscription: %w", err)
 	}
 
-	ps.topic = topic
-
-	return nil
+	return subscription, nil
 }
 
-func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config) error {
-	subscription := ps.inner.Subscription(cfg.Subscription)
-
-	exists, err := subscription.Exists(ctx)
-	if err != nil {
-		return fmt.Errorf("subscription.Exists: %w", err)
-	}
-
-	if exists {
-		ps.subscription = subscription
-
-		return nil
-	}
-
-	subscription, err = ps.inner.CreateSubscription(ctx, cfg.Subscription, cfg.toPubSub(ps.topic, cfg.OrderingKey != ""))
-	if err != nil {
-		return fmt.Errorf("CreateSubscription: %w", err)
-	}
-
-	ps.subscription = subscription
-
-	return nil
-}
-
-func (c Config) toPubSub(topic *pubsub.Topic, enableMessageOrdering bool) pubsub.SubscriptionConfig {
-	return pubsub.SubscriptionConfig{ //nolint:exhaustruct
-		AckDeadline:               c.AckDeadline,
+func (c Config) toPubSub(enableMessageOrdering bool) *pubsubpb.Subscription {
+	return &pubsubpb.Subscription{ //nolint:exhaustruct
+		Name:                      "projects/" + c.ProjectID + "/subscriptions/" + c.Subscription,
+		Topic:                     "projects/" + c.ProjectID + "/topics/" + c.Topic,
+		AckDeadlineSeconds:        int32(c.AckDeadline.Seconds()),
 		EnableExactlyOnceDelivery: c.EnableExactlyOnceDelivery,
 		EnableMessageOrdering:     enableMessageOrdering,
-		ExpirationPolicy:          c.ExpirationPolicy,
-		RetentionDuration:         c.RetentionDuration,
-		Topic:                     topic,
+		ExpirationPolicy:          &pubsubpb.ExpirationPolicy{Ttl: durationpb.New(c.ExpirationPolicy)},
+		MessageRetentionDuration:  durationpb.New(c.RetentionDuration),
 		Filter:                    fmt.Sprintf("attributes.origin != %q", c.Origin),
 	}
 }
