@@ -178,6 +178,7 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 }
 
 func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) (*pubsubpb.Topic, error) {
+	name := "projects/" + cfg.ProjectID + "/topics/" + cfg.Topic
 	topics := ps.inner.TopicAdminClient.ListTopics(ctx, &pubsubpb.ListTopicsRequest{
 		Project: "projects/" + cfg.ProjectID,
 	})
@@ -192,7 +193,7 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) (*pubsub
 			return nil, fmt.Errorf("topics.Next(): %w", err)
 		}
 
-		if topic.Name == cfg.Topic {
+		if topic.Name == name {
 			return topic, nil
 		}
 	}
@@ -200,7 +201,7 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) (*pubsub
 	switch {
 	case cfg.RetentionDuration != 0:
 		topic, err := ps.inner.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{ //nolint:exhaustruct
-			Name:                     "projects/" + cfg.ProjectID + "/topics/" + cfg.Topic,
+			Name:                     name,
 			MessageRetentionDuration: durationpb.New(cfg.RetentionDuration),
 		})
 		if err != nil {
@@ -210,7 +211,7 @@ func (ps *PubSubQueue[T]) createTopic(ctx context.Context, cfg *Config) (*pubsub
 		return topic, nil
 	default:
 		topic, err := ps.inner.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{ //nolint:exhaustruct
-			Name: "projects/" + cfg.ProjectID + "/topics/" + cfg.Topic,
+			Name: name,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("TopicAdminClient.CreateTopic: %w", err)
@@ -235,7 +236,7 @@ func (ps *PubSubQueue[T]) createSubscription(ctx context.Context, cfg *Config) (
 			return nil, fmt.Errorf("subscriptions.Next(): %w", err)
 		}
 
-		if subscription.Name == cfg.Subscription {
+		if subscription.Name == "projects/"+cfg.ProjectID+"/subscriptions/"+cfg.Subscription {
 			return subscription, nil
 		}
 	}
