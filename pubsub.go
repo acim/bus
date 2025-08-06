@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -19,8 +20,6 @@ const (
 	defaultExpirationPolicy  = 24 * time.Hour
 	defaultRetentionDuration = 24 * time.Hour
 )
-
-var _ Queue[*dummyEvent] = (*PubSubQueue[*dummyEvent])(nil)
 
 var (
 	ErrEmptyProjectID    = errors.New("empty project ID")
@@ -47,7 +46,7 @@ type (
 		EnableExactlyOnceDelivery bool
 	}
 
-	PubSubQueue[T proto.Message] struct {
+	PubSubQueue[T any] struct {
 		inner       *pubsub.Client
 		publisher   *pubsub.Publisher
 		subscriber  *pubsub.Subscriber
@@ -57,7 +56,7 @@ type (
 )
 
 // NewPubSubQueue creates PubSub implementation of the Queue interface.
-func NewPubSubQueue[T proto.Message](ctx context.Context,
+func NewPubSubQueue[T any](ctx context.Context,
 	cfg *Config) (*PubSubQueue[T], func(context.Context) error, error) {
 
 	if cfg.ProjectID == "" {
@@ -124,10 +123,22 @@ func NewPubSubQueue[T proto.Message](ctx context.Context,
 }
 
 // Pub implements Queue interface.
-func (ps *PubSubQueue[T]) Pub(ctx context.Context, message T) error {
-	data, err := protojson.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("protojson.Marshal: %w", err)
+func (ps *PubSubQueue[T]) Pub(ctx context.Context, message *T) error {
+	var (
+		data []byte
+		err  error
+	)
+
+	if msg, ok := any(message).(proto.Message); ok {
+		data, err = protojson.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("protojson.Marshal: %w", err)
+		}
+	} else {
+		data, err = json.Marshal(message)
+		if err != nil {
+			return fmt.Errorf("json.Marshal: %w", err)
+		}
 	}
 
 	m := &pubsub.Message{
@@ -147,30 +158,40 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message T) error {
 }
 
 // Sub implements Queue interface.
-func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
-	ch := make(chan Message[T])
+func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[*T] {
+	ch := make(chan Message[*T])
 
 	go func() {
 		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
 			var message T
 
-			if err := protojson.Unmarshal(m.Data, message); err != nil {
-				ch <- Message[T]{Error: err} //nolint:exhaustruct
+			if msg, ok := any(&message).(proto.Message); ok {
+				if err := protojson.Unmarshal(m.Data, msg); err != nil {
+					ch <- Message[*T]{Error: fmt.Errorf("protojson.Unmarshal: %w", err)} //nolint:exhaustruct
 
-				m.Ack()
+					m.Ack()
 
-				return
+					return
+				}
+			} else {
+				if err := json.Unmarshal(m.Data, &message); err != nil {
+					ch <- Message[*T]{Error: fmt.Errorf("json.Unmarshal: %w", err)} //nolint:exhaustruct
+
+					m.Ack()
+
+					return
+				}
 			}
 
-			ch <- Message[T]{
-				Data:  message,
+			ch <- Message[*T]{
+				Data:  &message,
 				Ack:   m.Ack,
 				Nack:  m.Nack,
 				Error: nil,
 			}
 		})
 		if err != nil {
-			ch <- Message[T]{Error: err} //nolint:exhaustruct
+			ch <- Message[*T]{Error: err} //nolint:exhaustruct
 		}
 	}()
 
