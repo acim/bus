@@ -163,24 +163,28 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[*T] {
 
 	go func() {
 		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
-			var message T
+			var (
+				message T
+				err     error
+			)
 
 			if msg, ok := any(&message).(proto.Message); ok {
-				if err := protojson.Unmarshal(m.Data, msg); err != nil {
-					ch <- Message[*T]{Error: fmt.Errorf("protojson.Unmarshal: %w", err)} //nolint:exhaustruct
-
-					m.Ack()
-
-					return
-				}
+				err = protojson.Unmarshal(m.Data, msg)
 			} else {
-				if err := json.Unmarshal(m.Data, &message); err != nil {
-					ch <- Message[*T]{Error: fmt.Errorf("json.Unmarshal: %w", err)} //nolint:exhaustruct
+				err = json.Unmarshal(m.Data, &message)
+			}
 
-					m.Ack()
-
-					return
+			if err != nil {
+				ch <- Message[*T]{
+					Data:  nil,
+					Ack:   m.Ack,
+					Nack:  m.Nack,
+					Error: fmt.Errorf("unmarshal: %w", err),
 				}
+
+				m.Ack()
+
+				return
 			}
 
 			ch <- Message[*T]{
@@ -191,7 +195,12 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[*T] {
 			}
 		})
 		if err != nil {
-			ch <- Message[*T]{Error: err} //nolint:exhaustruct
+			ch <- Message[*T]{
+				Data:  nil,
+				Ack:   func() {},
+				Nack:  func() {},
+				Error: err,
+			}
 		}
 	}()
 
