@@ -13,6 +13,6 @@ type Message[T any] struct {
 
 // Queue defines message queue methods.
 type Queue[T any] interface {
-	Pub(ctx context.Context, message T) error
-	Sub(ctx context.Context) <-chan Message[T]
+	Pub(ctx context.Context, message *T) error
+	Sub() <-chan Message[*T]
 }

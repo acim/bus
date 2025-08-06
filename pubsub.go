@@ -50,6 +50,7 @@ type (
 		inner       *pubsub.Client
 		publisher   *pubsub.Publisher
 		subscriber  *pubsub.Subscriber
+		stopReceive context.CancelFunc
 		origin      string
 		orderingKey string
 	}
@@ -114,6 +115,10 @@ func NewPubSubQueue[T any](ctx context.Context,
 	return ps, func(ctx context.Context) error {
 		ps.publisher.Stop()
 
+		if ps.stopReceive != nil {
+			ps.stopReceive()
+		}
+
 		if err := client.Close(); err != nil {
 			return fmt.Errorf("client.Close: %w", err)
 		}
@@ -158,8 +163,11 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message *T) error {
 }
 
 // Sub implements Queue interface.
-func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[*T] {
+func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
 	ch := make(chan Message[*T])
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ps.stopReceive = cancel
 
 	go func() {
 		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
