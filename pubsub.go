@@ -152,9 +152,9 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 
 	go func() {
 		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
-			var message T
+			message := new(T)
 
-			if err := protojson.Unmarshal(m.Data, message); err != nil {
+			if err := protojson.Unmarshal(m.Data, *message); err != nil {
 				ch <- Message[T]{Error: err} //nolint:exhaustruct
 
 				m.Ack()
@@ -163,7 +163,7 @@ func (ps *PubSubQueue[T]) Sub(ctx context.Context) <-chan Message[T] {
 			}
 
 			ch <- Message[T]{
-				Data:  message,
+				Data:  *message,
 				Ack:   m.Ack,
 				Nack:  m.Nack,
 				Error: nil,
