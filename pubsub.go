@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsub/v2"
@@ -50,6 +51,7 @@ type (
 		inner       *pubsub.Client
 		publisher   *pubsub.Publisher
 		subscriber  *pubsub.Subscriber
+		mu          sync.RWMutex
 		stopReceive context.CancelFunc
 		origin      string
 		orderingKey string
@@ -115,9 +117,13 @@ func NewPubSubQueue[T any](ctx context.Context,
 	return ps, func(ctx context.Context) error {
 		ps.publisher.Stop()
 
+		ps.mu.RLock()
+
 		if ps.stopReceive != nil {
 			ps.stopReceive()
 		}
+
+		ps.mu.RUnlock()
 
 		if err := client.Close(); err != nil {
 			return fmt.Errorf("client.Close: %w", err)
@@ -167,7 +173,10 @@ func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
 	ch := make(chan Message[*T])
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	ps.mu.Lock()
 	ps.stopReceive = cancel
+	ps.mu.Unlock()
 
 	go func() {
 		err := ps.subscriber.Receive(ctx, func(ctx context.Context, m *pubsub.Message) {
