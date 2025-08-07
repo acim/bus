@@ -5,7 +5,7 @@ import (
 )
 
 type Message[T any] struct {
-	Data  T
+	Data  *T
 	Error error
 	Ack   func()
 	Nack  func()
@@ -14,5 +14,5 @@ type Message[T any] struct {
 // Queue defines message queue methods.
 type Queue[T any] interface {
 	Pub(ctx context.Context, message *T) error
-	Sub() <-chan Message[*T]
+	Sub() <-chan *Message[T]
 }

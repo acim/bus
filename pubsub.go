@@ -169,8 +169,8 @@ func (ps *PubSubQueue[T]) Pub(ctx context.Context, message *T) error {
 }
 
 // Sub implements Queue interface.
-func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
-	ch := make(chan Message[*T])
+func (ps *PubSubQueue[T]) Sub() <-chan *Message[T] {
+	ch := make(chan *Message[T])
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -192,7 +192,7 @@ func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
 			}
 
 			if err != nil {
-				ch <- Message[*T]{
+				ch <- &Message[T]{
 					Data:  nil,
 					Ack:   m.Ack,
 					Nack:  m.Nack,
@@ -204,7 +204,7 @@ func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
 				return
 			}
 
-			ch <- Message[*T]{
+			ch <- &Message[T]{
 				Data:  &message,
 				Ack:   m.Ack,
 				Nack:  m.Nack,
@@ -212,7 +212,7 @@ func (ps *PubSubQueue[T]) Sub() <-chan Message[*T] {
 			}
 		})
 		if err != nil {
-			ch <- Message[*T]{
+			ch <- &Message[T]{
 				Data:  nil,
 				Ack:   func() {},
 				Nack:  func() {},
