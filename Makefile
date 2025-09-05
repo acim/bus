@@ -15,3 +15,5 @@ test-cov:
 
 update:
 	@go get -u
+	@go mod tidy
+
